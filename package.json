@@ -33,7 +33,7 @@
     "node": ">=0.12"
   },
   "dependencies": {
-    "babel-polyfill": "^6.8.0",
+    "babel-polyfill": "^6.9.1",
     "blocked": "^1.1.0",
     "clarify": "^1.0.5",
     "debug": "^2.1.3",
