@@ -67,7 +67,7 @@
     "mocha": "^2.2.5",
     "must": "^0.13.1",
     "nyc": "^6.4.0",
-    "standard": "^7.0.0"
+    "standard": "^7.1.2"
   },
   "scripts": {
     "build": "NODE_ENV=production babel --source-maps --out-dir=dist/ src/",
