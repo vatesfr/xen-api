@@ -400,21 +400,23 @@ export class Xapi extends EventEmitter {
 
   // Medium level call: handle session errors.
   _sessionCall (method, args) {
-    if (startsWith(method, 'session.')) {
-      return Promise.reject(
-        new Error('session.*() methods are disabled from this interface')
-      )
+    try {
+      if (startsWith(method, 'session.')) {
+        throw new Error('session.*() methods are disabled from this interface')
+      }
+
+      return this._transportCall(method, [this.sessionId].concat(args))
+        ::pCatch(isSessionInvalid, () => {
+          // XAPI is sometimes reinitialized and sessions are lost.
+          // Try to login again.
+          debug('%s: the session has been reinitialized', this._humanId)
+
+          this._sessionId = null
+          return this.connect().then(() => this._sessionCall(method, args))
+        })
+    } catch (error) {
+      return Promise.reject(error)
     }
-
-    return this._transportCall(method, [this.sessionId].concat(args))
-    ::pCatch(isSessionInvalid, () => {
-      // XAPI is sometimes reinitialized and sessions are lost.
-      // Try to login again.
-      debug('%s: the session has been reinitialized', this._humanId)
-
-      this._sessionId = null
-      return this.connect().then(() => this._sessionCall(method, args))
-    })
   }
 
   // Low level call: handle transport errors.
