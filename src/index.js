@@ -5,7 +5,7 @@ import ms from 'ms'
 import httpRequest from 'http-request-plus'
 import { BaseError } from 'make-error'
 import { EventEmitter } from 'events'
-import { filter, forEach, isArray, isObject, map, startsWith } from 'lodash'
+import { filter, forEach, isArray, isObject, map, noop, startsWith } from 'lodash'
 import {
   cancelable,
   CancelToken,
@@ -410,6 +410,9 @@ export class Xapi extends EventEmitter {
 
         if (!(tries < MAX_TRIES)) {
           debug('%s too many network errors (%s), give up', this._humanId, tries)
+
+          // mark as disconnected
+          this.disconnect()::pCatch(noop)
 
           throw error
         }
