@@ -2,18 +2,15 @@ import Collection from 'xo-collection'
 import createDebug from 'debug'
 import kindOf from 'kindof'
 import ms from 'ms'
+import superagent from 'superagent'
 import { BaseError } from 'make-error'
 import { EventEmitter } from 'events'
 import { filter, forEach, isArray, isObject, map, startsWith } from 'lodash'
+import { format, parse } from 'json-rpc-protocol'
 import {
   catchPlus as pCatch,
-  delay as pDelay,
-  promisify
+  delay as pDelay
 } from 'promise-toolbox'
-import {
-  createClient as createXmlRpcClient,
-  createSecureClient as createSecureXmlRpcClient
-} from 'xmlrpc'
 
 const debug = createDebug('xen-api')
 
@@ -97,99 +94,46 @@ export const wrapError = error => new XapiError(error)
 // ===================================================================
 
 const formatUrl = url => {
-  const parts = []
+  const parts = [ 'http' ]
 
-  if (!url.isSecure) {
-    parts.push('http://')
+  if (url.isSecure) {
+    parts.push('s')
   }
-  parts.push(url.hostname)
+
+  parts.push('://', url.hostname)
+
   if (url.port != null) {
     parts.push(':', url.port)
   }
+  parts.push(url.path)
 
   return parts.join('')
 }
 
-const URL_RE = /^(?:(http(s)?:)\/*)?([^/]+?)(?::([0-9]+))?\/?$/
-function parseUrl (url) {
+const patchUrl = (url, diff) => {
+  url = { ...url, ...diff }
+  url.href = formatUrl(url)
+  return url
+}
+
+const URL_RE = /^(?:(?:http(s)?:)\/*)?([^/]+?)(?::([0-9]+))?\/?$/
+const parseUrl = url => {
   const matches = URL_RE.exec(url)
   if (!matches) {
     throw new Error('invalid URL: ' + url)
   }
 
-  let [, protocol, isSecure, hostname, port] = matches
-  if (!protocol) {
-    protocol = 'https:'
-    isSecure = true
-  } else {
-    isSecure = Boolean(isSecure)
+  url = {
+    hostname: matches[2],
+    href: '',
+    isSecure: Boolean(matches[1]),
+    path: '/jsonrpc',
+    port: matches[3]
   }
+  url.href = formatUrl(url)
 
-  return {
-    isSecure,
-    protocol,
-    hostname,
-    port,
-    path: '/json',
-    pathname: '/json'
-  }
+  return url
 }
-
-// -------------------------------------------------------------------
-
-const SPECIAL_CHARS = {
-  '\r': '\\r',
-  '\t': '\\t'
-}
-const SPECIAL_CHARS_RE = new RegExp(
-  Object.keys(SPECIAL_CHARS).join('|'),
-  'g'
-)
-
-const parseResult = invoke(() => {
-  const parseJson = JSON.parse
-
-  return (result) => {
-    const status = result.Status
-
-    // Return the plain result if it does not have a valid XAPI
-    // format.
-    if (!status) {
-      return result
-    }
-
-    if (status !== 'Success') {
-      throw wrapError(result.ErrorDescription)
-    }
-
-    const value = result.Value
-
-    // XAPI returns an empty string (invalid JSON) for an empty
-    // result.
-    if (!value) {
-      return ''
-    }
-
-    try {
-      return parseJson(value)
-    } catch (error) {
-      // XAPI JSON sometimes contains invalid characters.
-      if (error instanceof SyntaxError) {
-        let replaced
-        const fixedValue = value.replace(SPECIAL_CHARS_RE, (match) => {
-          replaced = true
-          return SPECIAL_CHARS[match]
-        })
-
-        if (replaced) {
-          return parseJson(fixedValue)
-        }
-      }
-
-      throw error
-    }
-  }
-})
 
 // -------------------------------------------------------------------
 
@@ -245,8 +189,6 @@ export class Xapi extends EventEmitter {
     this._readOnly = Boolean(opts.readOnly)
     this._sessionId = null
     this._url = parseUrl(opts.url)
-
-    this._init()
 
     if (opts.watchEvents !== false) {
       this._debounce = opts.debounce == null
@@ -459,14 +401,11 @@ export class Xapi extends EventEmitter {
       ::pCatch(isHostSlave, ({params: [master]}) => {
         debug('%s: host is slave, attempting to connect at %s', this._humanId, master)
 
-        const newUrl = {
-          ...this._url,
+        const newUrl = patchUrl(this._url, {
           hostname: master
-        }
-        this.emit('redirect', formatUrl(newUrl))
+        })
+        this.emit('redirect', newUrl.href)
         this._url = newUrl
-
-        this._init()
 
         return this._transportCall(method, args, startTime)
       })
@@ -498,42 +437,23 @@ export class Xapi extends EventEmitter {
 
   // Lowest level call: do not handle any errors.
   _rawCall (method, args) {
-    return this._xmlRpcCall(method, args)
-      .then(
-        parseResult,
-        error => {
-          if (error.res) {
-            console.error(
-              'XML-RPC Error: %s (response status %s)',
-              error.message,
-              error.res.statusCode
-            )
-            console.error('%s', error.body)
-          }
+    return Promise.resolve().then(() =>
+      superagent.post(this._url.href)
+        .accept('application/json')
+        .parse(superagent.parse.text) // no smart parsing from superagent
+        .send(format.request(0, method, args))
+        .type('application/json')
+    ).then(({ text }) => {
+      const response = parse(text)
+      if (response.type === 'response') {
+        return response.result
+      }
 
-          throw error
-        }
-      ).catch(error => {
-        error.method = method
-        throw error
-      })
-  }
-
-  _init () {
-    const {isSecure, hostname, port, path} = this._url
-
-    const client = (isSecure
-      ? createSecureXmlRpcClient
-      : createXmlRpcClient
-    )({
-      hostname,
-      port,
-      path,
-      rejectUnauthorized: false,
-      timeout: 10
+      throw wrapError(response.error)
+    }).catch(error => {
+      error.method = method
+      throw error
     })
-
-    this._xmlRpcCall = promisify(client.methodCall, client)
   }
 
   _addObject (type, ref, object) {
