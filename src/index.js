@@ -2,15 +2,15 @@ import Collection from 'xo-collection'
 import createDebug from 'debug'
 import kindOf from 'kindof'
 import ms from 'ms'
-import superagent from 'superagent'
 import { BaseError } from 'make-error'
 import { EventEmitter } from 'events'
 import { filter, forEach, isArray, isObject, map, startsWith } from 'lodash'
-import { format, parse } from 'json-rpc-protocol'
 import {
   catchPlus as pCatch,
   delay as pDelay
 } from 'promise-toolbox'
+
+import autoTransport from './transports/auto'
 
 const debug = createDebug('xen-api')
 
@@ -93,30 +93,7 @@ export const wrapError = error => new XapiError(error)
 
 // ===================================================================
 
-const formatUrl = url => {
-  const parts = [ 'http' ]
-
-  if (url.isSecure) {
-    parts.push('s')
-  }
-
-  parts.push('://', url.hostname)
-
-  if (url.port != null) {
-    parts.push(':', url.port)
-  }
-  parts.push(url.path)
-
-  return parts.join('')
-}
-
-const patchUrl = (url, diff) => {
-  url = { ...url, ...diff }
-  url.href = formatUrl(url)
-  return url
-}
-
-const URL_RE = /^(?:(?:http(s)?:)\/*)?([^/]+?)(?::([0-9]+))?\/?$/
+const URL_RE = /^(?:http(s)?:\/*)?([^/]+?)(?::([0-9]+))?\/?$/
 const parseUrl = url => {
   const matches = URL_RE.exec(url)
   if (!matches) {
@@ -125,12 +102,9 @@ const parseUrl = url => {
 
   url = {
     hostname: matches[2],
-    href: '',
-    isSecure: Boolean(matches[1]),
-    path: '/jsonrpc',
-    port: matches[3]
+    port: matches[3],
+    protocol: matches[1] === 's' ? 'https:' : 'http:'
   }
-  url.href = formatUrl(url)
 
   return url
 }
@@ -213,6 +187,15 @@ export class Xapi extends EventEmitter {
     }
   }
 
+  get _url () {
+    return this.__url
+  }
+
+  set _url (url) {
+    this.__url = url
+    this._call = autoTransport({ url })
+  }
+
   get readOnly () {
     return this._readOnly
   }
@@ -258,7 +241,7 @@ export class Xapi extends EventEmitter {
       return Promise.reject(new Error('already connecting'))
     }
 
-    this._sessionId = 'connecting'
+    this._sessionId = CONNECTING
 
     return this._transportCall('session.login_with_password', [
       this._auth.user,
@@ -401,10 +384,11 @@ export class Xapi extends EventEmitter {
       ::pCatch(isHostSlave, ({params: [master]}) => {
         debug('%s: host is slave, attempting to connect at %s', this._humanId, master)
 
-        const newUrl = patchUrl(this._url, {
+        const newUrl = {
+          ...this._url,
           hostname: master
-        })
-        this.emit('redirect', newUrl.href)
+        }
+        this.emit('redirect', newUrl)
         this._url = newUrl
 
         return this._transportCall(method, args, startTime)
@@ -437,20 +421,11 @@ export class Xapi extends EventEmitter {
 
   // Lowest level call: do not handle any errors.
   _rawCall (method, args) {
-    return Promise.resolve().then(() =>
-      superagent.post(this._url.href)
-        .accept('application/json')
-        .parse(superagent.parse.text) // no smart parsing from superagent
-        .send(format.request(0, method, args))
-        .type('application/json')
-    ).then(({ text }) => {
-      const response = parse(text)
-      if (response.type === 'response') {
-        return response.result
+    return this._call(method, args).catch(error => {
+      if (isArray(error)) {
+        error = wrapError(error)
       }
 
-      throw wrapError(response.error)
-    }).catch(error => {
       error.method = method
       throw error
     })
