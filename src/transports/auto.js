@@ -1,29 +1,32 @@
-import { InvalidJson } from 'json-rpc-protocol'
-
 import jsonRpc from './json-rpc'
 import xmlRpc from './xml-rpc'
+import xmlRpcJson from './xml-rpc-json'
 
 export default opts => {
-  let call = (jsonRpcCall =>
-    (method, args) => jsonRpcCall(method, args).then(
-      result => {
-        // JSON-RPC seems to be working, remove the test
-        call = jsonRpcCall
+  const factories = [ jsonRpc, xmlRpcJson, xmlRpc ]
 
-        return result
-      },
-      error => {
-        if (error instanceof InvalidJson) {
-          // fallback to XML-RPC
-          call = xmlRpc(opts)
+  const { length } = factories
+  let i = 0
 
+  let call
+  function create () {
+    const current = factories[i++](opts)
+    if (i < length) {
+      call = (method, args) => current(method, args).then(
+        result => {
+          call = current
+          return result
+        },
+        () => {
+          create()
           return call(method, args)
         }
-
-        throw error
-      }
-    )
-  )(jsonRpc(opts))
+      )
+    } else {
+      call = current
+    }
+  }
+  create()
 
   return (method, args) => call(method, args)
 }
