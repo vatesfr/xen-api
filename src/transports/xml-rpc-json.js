@@ -1,6 +1,8 @@
 import { createClient, createSecureClient } from 'xmlrpc'
 import { promisify } from 'promise-toolbox'
 
+import { UnsupportedTransport } from './_utils'
+
 const logError = error => {
   if (error.res) {
     console.error(
@@ -48,21 +50,28 @@ const parseResult = result => {
     return JSON.parse(value)
   } catch (error) {
     // XAPI JSON sometimes contains invalid characters.
-    if (error instanceof SyntaxError) {
-      let replaced
-      const fixedValue = value.replace(SPECIAL_CHARS_RE, match => {
-        replaced = true
-        return SPECIAL_CHARS[match]
-      })
+    if (!(error instanceof SyntaxError)) {
+      throw error
+    }
+  }
 
-      if (replaced) {
-        return JSON.parse(fixedValue)
+  let replaced = false
+  const fixedValue = value.replace(SPECIAL_CHARS_RE, match => {
+    replaced = true
+    return SPECIAL_CHARS[match]
+  })
+
+  if (replaced) {
+    try {
+      return JSON.parse(fixedValue)
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) {
+        throw error
       }
     }
-
-    console.log(value)
-    throw error
   }
+
+  throw new UnsupportedTransport()
 }
 
 export default ({

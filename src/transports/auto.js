@@ -1,25 +1,29 @@
 import jsonRpc from './json-rpc'
 import xmlRpc from './xml-rpc'
 import xmlRpcJson from './xml-rpc-json'
+import { UnsupportedTransport } from './_utils'
+
+const factories = [ jsonRpc, xmlRpcJson, xmlRpc ]
+const { length } = factories
 
 export default opts => {
-  const factories = [ jsonRpc, xmlRpcJson, xmlRpc ]
-
-  const { length } = factories
   let i = 0
 
   let call
   function create () {
     const current = factories[i++](opts)
     if (i < length) {
-      call = (method, args) => current(method, args).then(
-        result => {
-          call = current
-          return result
-        },
-        () => {
-          create()
-          return call(method, args)
+      const currentI = i
+      call = (method, args) => current(method, args).catch(
+        error => {
+          if (error instanceof UnsupportedTransport) {
+            if (currentI === i) { // not changed yet
+              create()
+            }
+            return call(method, args)
+          }
+
+          throw error
         }
       )
     } else {
